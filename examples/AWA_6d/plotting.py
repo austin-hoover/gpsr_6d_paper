@@ -20,6 +20,8 @@ def plot_corner(
     diag_kws.setdefault("color", "black")
     diag_kws.setdefault("lw", 1.5)
 
+    ndim = X.shape[1]
+    
     if limits is None:
         mins = np.min(X, axis=0)
         maxs = np.max(X, axis=0)
@@ -29,10 +31,10 @@ def plot_corner(
 
     if axs is None:
         fig, axs = plt.subplots(
-            ncols=6, nrows=6, figsize=(8, 8), sharex=False, sharey=False, **fig_kws
+            ncols=ndim, nrows=ndim, figsize=(8, 8), sharex=False, sharey=False, **fig_kws
         )
-    for i in range(6):
-        for j in range(6):
+    for i in range(ndim):
+        for j in range(ndim):
             ax = axs[i, j]
             if i == j:
                 axis = i
@@ -49,7 +51,7 @@ def plot_corner(
                 hist = hist / np.max(hist)
                 ax.pcolormesh(edges[0], edges[1], hist.T, **plot_kws)
 
-    for i in range(6):
+    for i in range(ndim):
         for ax in axs[i, 1:]:
             ax.set_yticks([])
         for ax in axs[:-1, i]:
