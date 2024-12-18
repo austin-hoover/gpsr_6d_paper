@@ -1,9 +1,12 @@
 import argparse
+import os
+import time
 from typing import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from skimage.transform import downscale_local_mean
 
 from bmadx.bmad_torch.track_torch import Beam
 from bmadx.bmad_torch.track_torch import TorchLattice
@@ -16,6 +19,42 @@ from utils import LatticeFactory
 from utils import TorchLatticeTransform
 from utils import coords_to_edges    
 
+
+# Setup
+# --------------------------------------------------------------------------------------
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--downscale", type=int, default=1)
+parser.add_argument("--nsamp", type=int, default=80_000)
+parser.add_argument("--iterations", type=int, default=3000)
+parser.add_argument("--device", type=str, default="cpu")
+parser.add_argument("--diag-bandwidth", type=float, default=0.5)
+parser.add_argument("--nn-width", type=int, default=50)
+parser.add_argument("--nn-depth", type=int, default=2)
+parser.add_argument("--lr", type=float, default=0.001)
+args = parser.parse_args()
+
+
+timestamp = time.strftime("%y%m%d%H%M%S")
+output_dir = os.path.join("outputs", timestamp)
+os.makedirs(output_dir, exist_ok=True)
+
+
+device = args.device
+
+
+def send(x: torch.Tensor) -> torch.Tensor:
+    x = x.type(torch.float32).to(device)
+    return x
+
+
+def grab(x: torch.Tensor) -> np.array:
+    return x.detach().cpu().numpy()
+
+
+
+# Helper functions
+# --------------------------------------------------------------------------------------
 
 class NNTransform(torch.nn.Module):
     def __init__(
@@ -92,12 +131,12 @@ class ReconstructionModel:
         loss = 0.0 
         loss += torch.mean(torch.abs(torch.mean(X, axis=0)))
         
-        loss += torch.abs(torch.std(X[:, 0]) - 0.0001)
-        loss += torch.abs(torch.std(X[:, 1]) - 0.0001)
-        loss += torch.abs(torch.std(X[:, 2]) - 0.0001)
-        loss += torch.abs(torch.std(X[:, 3]) - 0.0001)
-        loss += torch.abs(torch.std(X[:, 4]) - 0.00001)
-        loss += torch.abs(torch.std(X[:, 5]) - 0.00001)
+        loss += torch.abs(torch.std(X[:, 0]) - 0.0002)
+        loss += torch.abs(torch.std(X[:, 1]) - 0.0002)
+        loss += torch.abs(torch.std(X[:, 2]) - 0.0002)
+        loss += torch.abs(torch.std(X[:, 3]) - 0.0002)
+        loss += torch.abs(torch.std(X[:, 4]) - 0.0001)
+        loss += torch.abs(torch.std(X[:, 5]) - 0.0001)
         return loss
             
     def loss(self, batch_size: int) -> torch.Tensor:
@@ -116,46 +155,32 @@ class ReconstructionModel:
 
 
 def plot_proj(projections_pred: list[np.ndarray], projections_meas: list[np.ndarray]):
-    ncols = min(10, len(projections_pred))
-    nrows = 2
-    
+    n = len(projections_pred)
+    ncols = min(10, n)
+    nrows = int(np.ceil(n / ncols))
+    nrows = nrows * 2
+            
     fig, axs = plt.subplots(
         ncols=ncols,
         nrows=nrows,
         figsize=(ncols * 1.0, nrows * 1.0),
         gridspec_kw=dict(hspace=0, wspace=0),
     )
-    for j in range(ncols):
-        axs[0, j].pcolormesh(projections_pred[j].T)
-        axs[1, j].pcolormesh(projections_meas[j].T)
+    
+    index = 0
+    for i in range(0, nrows, 2):
+        for j in range(ncols):
+            axs[i, j].pcolormesh(projections_pred[index].T)
+            axs[i + 1, j].pcolormesh(projections_meas[index].T)
+            index += 1
+            
     for ax in axs.ravel():
         ax.set_xticks([])
         ax.set_yticks([])
         for loc in ax.spines:
             ax.spines[loc].set_visible(False)
+            
     return fig, axs
-
-
-# Setup
-# --------------------------------------------------------------------------------------
-
-parser = argparse.ArgumentParser()
-parser.add_argument("--nsamp", type=int, default=10_000)
-parser.add_argument("--device", type=str, default="cpu")
-parser.add_argument("--lr", type=float, default=0.01)
-args = parser.parse_args()
-
-
-device = args.device
-
-
-def send(x: torch.Tensor) -> torch.Tensor:
-    x = x.type(torch.float32).to(device)
-    return x
-
-
-def grab(x: torch.Tensor) -> np.array:
-    return x.detach().cpu().numpy()
 
 
 # Load data
@@ -165,6 +190,7 @@ data = torch.load("clipped_dset.pt")
 train_data, test_data = split_2screen_dset(data)
 
 params = train_data.params
+params = send(params)
 n_images = params.shape[0] * params.shape[1] * params.shape[2]
 params_list = params.reshape(n_images, params.shape[-1])
 
@@ -173,14 +199,15 @@ projections = projections.sum(axis=3)  # average over multi-shot images
 projections = projections.reshape(n_images, projections.shape[-2], projections.shape[-1])
 projections = [send(projection) for projection in projections]
 
-downscale = 3
-from skimage.transform import downscale_local_mean
+downscale = args.downscale
 for i in range(len(projections)):
-    projections[i] = downscale_local_mean(
-        projections[i].detach().numpy(), (downscale, downscale)
-    )
-    projections[i] = torch.from_numpy(projections[i])
-    
+    if downscale > 1:
+        projections[i] = downscale_local_mean(grab(projections[i]), (downscale, downscale))
+        projections[i] = torch.from_numpy(projections[i])
+
+for i in range(len(projections)):
+    projections[i] = send(projections[i])
+        
 
 # Create transforms
 # --------------------------------------------------------------------------------------
@@ -188,6 +215,10 @@ for i in range(len(projections)):
 p0c = 43.3e06
 lattice0 = quad_tdc_bend(p0c=p0c, dipole_on=False)
 lattice1 = quad_tdc_bend(p0c=p0c, dipole_on=True)
+
+for lattice in [lattice0, lattice1]:
+    for i, element in enumerate(lattice.elements):
+        element.type(torch.float32).to(device)
 
 lattice_factory = LatticeFactory(
     lattice0.copy(),
@@ -228,7 +259,7 @@ for index, params in enumerate(params_list):
     diagnostic = mf.diagnostics.Histogram2D(
         axis=(0, 2), 
         edges=(bin_edges, bin_edges),
-        bandwidth=(1.0, 1.0),
+        bandwidth=(args.diag_bandwidth, args.diag_bandwidth),
     )
     diagnostic.to(device)
     diagnostics.append(diagnostic)
@@ -241,7 +272,10 @@ ndim = 6
 batch_size = args.nsamp
 
 transformer = NNTransform(
-    ndim=ndim, depth=2, width=50, scale=0.01
+    ndim=ndim, 
+    depth=args.nn_depth, 
+    width=args.nn_width, 
+    scale=0.01
 )
 transformer.to(device)
 
@@ -252,7 +286,7 @@ rec_model = ReconstructionModel(distribution, transforms, diagnostics, projectio
 optimizer = torch.optim.Adam(distribution.parameters(), lr=args.lr)
 
 distribution.train()
-for iteration in range(200):
+for iteration in range(args.iterations):
     if iteration < 100:
         loss = rec_model.loss_mean(batch_size)
     else:
@@ -275,7 +309,10 @@ for iteration in range(200):
         projections_meas = [grab(p) for p in projections_meas]
         
         fig, axs = plot_proj(projections_pred, projections_meas)
-        plt.show()
+        filename = f"fig_proj_{iteration:04.0f}.png"
+        filename = os.path.join(output_dir, filename)
+        plt.savefig(filename, dpi=250)
+        plt.close()
         
         distribution.train()
 
