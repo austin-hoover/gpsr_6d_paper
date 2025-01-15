@@ -1,5 +1,6 @@
 import copy
 import os
+import time
 
 import torch
 from torch.optim.lr_scheduler import ExponentialLR
@@ -609,6 +610,7 @@ def train_3d_scan_2screens(
         scheduler = ExponentialLR(optimizer, gamma)
     loss_fn = MAELoss()
 
+    start_time = time.time()
     for i in range(n_epochs + 1):
         for elem in train_dataloader:
             params_i, target_images = elem[0], elem[1]
@@ -618,8 +620,7 @@ def train_3d_scan_2screens(
             loss.backward()
             optimizer.step()
 
-        if i % 100 == 0:
-            print(i, loss)
+        print("{:04.0f} {:0.2f} {}".format(i, time.time() - start_time, loss))
 
         # dump current particle distribution to file
         if i % distribution_dump_frequency == 0:
